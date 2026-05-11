@@ -2,14 +2,33 @@ import os
 import re
 from pathlib import Path
 
-import requests
-from yt_dlp import YoutubeDL
-
 
 class DownloaderCore:
     def __init__(self, outdir=None):
         self.outdir = outdir or self.default_output_dir()
-        Path(self.outdir).mkdir(parents=True, exist_ok=True)
+        self.ensure_output_dir()
+
+    def ensure_output_dir(self):
+        try:
+            Path(self.outdir).mkdir(parents=True, exist_ok=True)
+        except Exception:
+            fallback = Path.cwd() / "downloads"
+            fallback.mkdir(parents=True, exist_ok=True)
+            self.outdir = str(fallback)
+
+    def prefer_public_download_dir(self):
+        if not self.is_android_runtime():
+            return
+
+        public_dir = Path("/storage/emulated/0/Download/YTThumb")
+        try:
+            public_dir.mkdir(parents=True, exist_ok=True)
+            probe = public_dir / ".write_test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            self.outdir = str(public_dir)
+        except Exception:
+            self.ensure_output_dir()
 
     @staticmethod
     def is_android_runtime() -> bool:
@@ -49,6 +68,9 @@ class DownloaderCore:
         return m.group(1) if m else None
 
     def download_thumbnail(self, video_id: str, progress_cb=None) -> str:
+        import requests
+
+        self.ensure_output_dir()
         dest = os.path.join(self.outdir, f"{video_id}.jpg")
         urls = [
             f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
@@ -98,6 +120,9 @@ class DownloaderCore:
         return _hook
 
     def download_video_mp4(self, url: str, video_id: str, progress_cb=None) -> str:
+        from yt_dlp import YoutubeDL
+
+        self.ensure_output_dir()
         dest_tmpl = os.path.join(self.outdir, f"{video_id}.%(ext)s")
         opts = {
             # 安卓打包避免 ffmpeg 依赖，不做音视频合并
@@ -115,6 +140,9 @@ class DownloaderCore:
         return os.path.join(self.outdir, f"{video_id}.{ext}")
 
     def download_audio(self, url: str, video_id: str, progress_cb=None) -> str:
+        from yt_dlp import YoutubeDL
+
+        self.ensure_output_dir()
         dest_tmpl = os.path.join(self.outdir, f"{video_id}.%(ext)s")
         opts = {
             # 安卓打包避免 ffmpeg 依赖，不转 mp3，保留原始音频容器
@@ -132,6 +160,7 @@ class DownloaderCore:
         return os.path.join(self.outdir, f"{video_id}.{ext}")
 
     def run(self, url: str, mode: str, progress_cb=None):
+        self.prefer_public_download_dir()
         vid = self.extract_video_id(url)
         if not vid:
             raise ValueError("无法识别链接中的视频 ID")

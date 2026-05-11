@@ -22,7 +22,8 @@ class RootLayout(BoxLayout):
 class YTThumbApp(App):
     def build(self):
         self.title = "YT Thumb Android"
-        self.core = DownloaderCore()
+        outdir = self.user_data_dir if DownloaderCore.is_android_runtime() else None
+        self.core = DownloaderCore(outdir=outdir)
 
         root = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
 
@@ -73,7 +74,24 @@ class YTThumbApp(App):
         root.add_widget(sv)
 
         self.log("应用已启动")
+        self.request_android_permissions()
         return root
+
+    def request_android_permissions(self):
+        if not DownloaderCore.is_android_runtime():
+            return
+
+        try:
+            from android.permissions import Permission, request_permissions
+
+            request_permissions(
+                [
+                    Permission.READ_EXTERNAL_STORAGE,
+                    Permission.WRITE_EXTERNAL_STORAGE,
+                ]
+            )
+        except Exception as e:
+            self.log(f"权限请求跳过: {e}")
 
     def _sync_label_text(self, instance, _):
         instance.text_size = instance.size
@@ -147,6 +165,7 @@ class YTThumbApp(App):
     def on_done(self, result):
         self.status_label.text = "完成"
         self.progress.value = 100
+        self.out_label.text = f"输出目录: {self.core.outdir}"
         self.log("任务完成")
         for k, v in result.items():
             self.log(f"{k}: {v}")
