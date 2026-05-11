@@ -17,18 +17,7 @@ class DownloaderCore:
             self.outdir = str(fallback)
 
     def prefer_public_download_dir(self):
-        if not self.is_android_runtime():
-            return
-
-        public_dir = Path("/storage/emulated/0/Download/YTThumb")
-        try:
-            public_dir.mkdir(parents=True, exist_ok=True)
-            probe = public_dir / ".write_test"
-            probe.write_text("ok", encoding="utf-8")
-            probe.unlink(missing_ok=True)
-            self.outdir = str(public_dir)
-        except Exception:
-            self.ensure_output_dir()
+        self.ensure_output_dir()
 
     @staticmethod
     def is_android_runtime() -> bool:

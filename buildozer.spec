@@ -4,11 +4,11 @@ package.name = ytthumb
 package.domain = com.ginoyou
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,txt
-version = 0.1.1
+version = 0.1.2
 requirements = python3,kivy,requests,yt-dlp
 orientation = portrait
 fullscreen = 0
-android.permissions = INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
+android.permissions = INTERNET
 android.accept_sdk_license = True
 
 [buildozer]

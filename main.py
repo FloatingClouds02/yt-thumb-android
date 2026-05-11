@@ -74,24 +74,7 @@ class YTThumbApp(App):
         root.add_widget(sv)
 
         self.log("应用已启动")
-        self.request_android_permissions()
         return root
-
-    def request_android_permissions(self):
-        if not DownloaderCore.is_android_runtime():
-            return
-
-        try:
-            from android.permissions import Permission, request_permissions
-
-            request_permissions(
-                [
-                    Permission.READ_EXTERNAL_STORAGE,
-                    Permission.WRITE_EXTERNAL_STORAGE,
-                ]
-            )
-        except Exception as e:
-            self.log(f"权限请求跳过: {e}")
 
     def _sync_label_text(self, instance, _):
         instance.text_size = instance.size
