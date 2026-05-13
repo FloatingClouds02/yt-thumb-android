@@ -1,165 +1,207 @@
+import json
+import os
 import threading
+import webbrowser
 from datetime import datetime
-
-from kivy.app import App
-from kivy.clock import Clock
-from kivy.metrics import dp
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.button import Button
-from kivy.uix.label import Label
-from kivy.uix.progressbar import ProgressBar
-from kivy.uix.scrollview import ScrollView
-from kivy.uix.spinner import Spinner
-from kivy.uix.textinput import TextInput
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse
 
 from downloader_core import DownloaderCore
 
 
-class RootLayout(BoxLayout):
-    pass
+BASE_DIR = Path(__file__).resolve().parent
+WEB_DIR = BASE_DIR / "web"
+INDEX_HTML = WEB_DIR / "index.html"
+HOST = "127.0.0.1"
+PORT = 5000
 
 
-class YTThumbApp(App):
-    def build(self):
-        self.title = "YT Thumb Android"
-        outdir = self.user_data_dir if DownloaderCore.is_android_runtime() else None
-        self.core = DownloaderCore(outdir=outdir)
+def android_private_download_dir() -> str | None:
+    private_root = os.environ.get("ANDROID_PRIVATE", "").strip()
+    if not private_root:
+        return None
+    return str(Path(private_root) / "downloads")
 
-        root = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
 
-        root.add_widget(Label(text="YouTube 链接", size_hint_y=None, height=dp(28)))
+class AppState:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.output_dir = android_private_download_dir() or DownloaderCore.default_output_dir()
+        self.running = False
+        self.status = "就绪"
+        self.progress = 0.0
+        self.logs = []
+        self.result = {}
+        self.error = ""
+        self.mode = "full"
+        self._log("服务已启动")
 
-        self.url_input = TextInput(
-            multiline=False,
-            hint_text="https://www.youtube.com/watch?v=...",
-            size_hint_y=None,
-            height=dp(42),
-        )
-        root.add_widget(self.url_input)
+    def _log(self, message: str) -> None:
+        stamp = datetime.now().strftime("%H:%M:%S")
+        self.logs.append(f"[{stamp}] {message}")
+        self.logs = self.logs[-200:]
 
-        row = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(42), spacing=dp(8))
-        self.mode_spinner = Spinner(
-            text="视频+封面",
-            values=("视频+封面", "仅封面", "仅音频"),
-            size_hint_x=0.45,
-        )
-        row.add_widget(self.mode_spinner)
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "running": self.running,
+                "status": self.status,
+                "progress": round(self.progress, 1),
+                "logs": list(self.logs),
+                "result": dict(self.result),
+                "error": self.error,
+                "output_dir": self.output_dir,
+                "mode": self.mode,
+            }
 
-        self.start_btn = Button(text="开始下载", size_hint_x=0.55)
-        self.start_btn.bind(on_press=self.on_start)
-        row.add_widget(self.start_btn)
-        root.add_widget(row)
+    def start(self, url: str, mode: str) -> tuple[bool, str]:
+        with self._lock:
+            if self.running:
+                return False, "已有任务在运行"
+            self.running = True
+            self.status = "准备中..."
+            self.progress = 0.0
+            self.error = ""
+            self.result = {}
+            self.mode = mode
+            self.logs = []
+            self._log("开始任务")
+        worker = threading.Thread(target=self._worker, args=(url, mode), daemon=True)
+        worker.start()
+        return True, ""
 
-        self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=dp(18))
-        root.add_widget(self.progress)
+    def _worker(self, url: str, mode: str) -> None:
+        outdir = android_private_download_dir() or self.output_dir
+        core = DownloaderCore(outdir=outdir)
+        self._set_output_dir(core.outdir)
 
-        self.status_label = Label(text="就绪", size_hint_y=None, height=dp(24))
-        root.add_widget(self.status_label)
-
-        self.out_label = Label(
-            text=f"输出目录: {self.core.outdir}",
-            size_hint_y=None,
-            height=dp(40),
-            halign="left",
-            valign="middle",
-        )
-        self.out_label.bind(size=self._sync_label_text)
-        root.add_widget(self.out_label)
-
-        root.add_widget(Label(text="日志", size_hint_y=None, height=dp(24)))
-
-        self.log_input = TextInput(readonly=True, multiline=True, size_hint=(1, 1))
-        sv = ScrollView(size_hint=(1, 1))
-        sv.add_widget(self.log_input)
-        root.add_widget(sv)
-
-        self.log("应用已启动")
-        return root
-
-    def _sync_label_text(self, instance, _):
-        instance.text_size = instance.size
-
-    def log(self, msg):
-        ts = datetime.now().strftime("%H:%M:%S")
-        self.log_input.text += f"[{ts}] {msg}\n"
-        self.log_input.cursor = (0, len(self.log_input.text.splitlines()))
-
-    def mode_value(self):
-        mapping = {
-            "视频+封面": "full",
-            "仅封面": "thumbnail",
-            "仅音频": "audio",
-        }
-        return mapping[self.mode_spinner.text]
-
-    def on_start(self, _):
-        url = self.url_input.text.strip()
-        if not url:
-            self.status_label.text = "请输入链接"
-            return
-
-        self.start_btn.disabled = True
-        self.progress.value = 0
-        self.status_label.text = "准备中..."
-        self.log("开始任务")
-
-        threading.Thread(target=self.worker, args=(url, self.mode_value()), daemon=True).start()
-
-    def worker(self, url, mode):
         try:
-            def cb(evt_type, data):
-                Clock.schedule_once(lambda dt: self.on_progress(evt_type, data), 0)
+            result = core.run(url, mode, self._on_progress)
+            with self._lock:
+                self.running = False
+                self.progress = 100.0
+                self.status = "完成"
+                self.result = result
+                self.output_dir = core.outdir
+                self._log("任务完成")
+                for key, value in result.items():
+                    self._log(f"{key}: {value}")
+        except Exception as exc:
+            with self._lock:
+                self.running = False
+                self.status = "失败"
+                self.error = str(exc)
+                self._log(f"错误: {exc}")
 
-            result = self.core.run(url, mode, cb)
-            Clock.schedule_once(lambda dt: self.on_done(result), 0)
-        except Exception as e:
-            Clock.schedule_once(lambda dt: self.on_error(str(e)), 0)
-        finally:
-            Clock.schedule_once(lambda dt: self.enable_button(), 0)
+    def _set_output_dir(self, outdir: str) -> None:
+        with self._lock:
+            self.output_dir = outdir
 
-    def on_progress(self, evt_type, data):
-        if evt_type == "thumbnail_progress":
-            self.progress.value = data.get("percent", 0)
-            d_k = data.get("downloaded", 0) // 1024
-            t_k = data.get("total", 1) // 1024
-            self.status_label.text = f"封面下载 {d_k}K/{t_k}K"
-            return
+    def _on_progress(self, evt_type: str, data: dict) -> None:
+        with self._lock:
+            if evt_type == "thumbnail_progress":
+                self.progress = float(data.get("percent", 0.0))
+                downloaded = data.get("downloaded", 0) // 1024
+                total = max(1, data.get("total", 0) // 1024)
+                self.status = f"封面下载 {downloaded}K/{total}K"
+                return
 
-        if evt_type == "thumbnail_done":
-            self.log(f"封面已保存: {data.get('path')}")
-            self.status_label.text = "封面下载完成"
-            self.progress.value = 100
-            return
+            if evt_type == "thumbnail_done":
+                self.progress = 100.0
+                self.status = "封面下载完成"
+                self._log(f"封面已保存: {data.get('path')}")
+                return
 
-        if evt_type == "yt":
-            st = data.get("status")
-            if st == "downloading":
+            if evt_type != "yt":
+                return
+
+            status = data.get("status")
+            if status == "downloading":
                 total = data.get("total_bytes") or data.get("total_bytes_estimate") or 0
-                down = data.get("downloaded_bytes", 0)
+                downloaded = data.get("downloaded_bytes", 0)
                 if total:
-                    pct = down / total * 100
-                    self.progress.value = pct
-                    self.status_label.text = f"下载中 {pct:.1f}%"
+                    self.progress = downloaded / total * 100
+                    self.status = f"下载中 {self.progress:.1f}%"
                 else:
-                    self.status_label.text = f"下载中 {down // 1024**2}MB"
-            elif st == "finished":
-                self.status_label.text = "下载完成，正在收尾..."
+                    self.status = f"下载中 {downloaded // 1024**2}MB"
+                return
 
-    def on_done(self, result):
-        self.status_label.text = "完成"
-        self.progress.value = 100
-        self.out_label.text = f"输出目录: {self.core.outdir}"
-        self.log("任务完成")
-        for k, v in result.items():
-            self.log(f"{k}: {v}")
+            if status == "finished":
+                self.status = "下载完成，正在收尾..."
 
-    def on_error(self, msg):
-        self.status_label.text = "失败"
-        self.log(f"错误: {msg}")
 
-    def enable_button(self):
-        self.start_btn.disabled = False
+STATE = AppState()
+
+
+class RequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        route = urlparse(self.path).path
+        if route == "/":
+            self._serve_file(INDEX_HTML, "text/html; charset=utf-8")
+            return
+        if route == "/api/status":
+            self._send_json(STATE.snapshot())
+            return
+        self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+
+    def do_POST(self):
+        route = urlparse(self.path).path
+        if route != "/api/start":
+            self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+            return
+
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length)
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError:
+            self._send_json({"ok": False, "error": "请求格式错误"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        url = str(payload.get("url", "")).strip()
+        mode = str(payload.get("mode", "full")).strip()
+        if not url:
+            self._send_json({"ok": False, "error": "请输入 YouTube 链接"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if mode not in {"full", "thumbnail", "audio"}:
+            self._send_json({"ok": False, "error": "未知模式"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        ok, error = STATE.start(url, mode)
+        if not ok:
+            self._send_json({"ok": False, "error": error}, status=HTTPStatus.CONFLICT)
+            return
+        self._send_json({"ok": True})
+
+    def log_message(self, format, *args):
+        return
+
+    def _serve_file(self, path: Path, content_type: str) -> None:
+        data = path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+def main() -> None:
+    if not DownloaderCore.is_android_runtime():
+        webbrowser.open(f"http://{HOST}:{PORT}/")
+    server = ThreadingHTTPServer((HOST, PORT), RequestHandler)
+    server.serve_forever()
 
 
 if __name__ == "__main__":
-    YTThumbApp().run()
+    main()

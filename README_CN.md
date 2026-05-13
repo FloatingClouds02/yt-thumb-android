@@ -1,6 +1,11 @@
 # yt-thumb-android
 
-这是你 `yt-thumb.py` 的安卓 APK 版本工程（Kivy）。
+这是你 `yt-thumb.py` 的安卓 APK 版本工程。
+
+## 当前实现
+- 前端改为 `python-for-android` 的 `webview` bootstrap，避免部分 Android 13 设备上 `Kivy/SDLActivity` 启动即崩。
+- 下载核心仍然复用 `downloader_core.py`。
+- 安卓端默认保存到应用私有目录下的 `downloads`，不再申请外部存储权限。
 
 ## 功能
 - 视频+封面
@@ -26,7 +31,8 @@ buildozer android debug
 ```
 
 ## 目录
-- `main.py`：安卓界面
+- `main.py`：本地 HTTP 服务入口
+- `web/index.html`：WebView 前端
 - `downloader_core.py`：下载核心逻辑
 - `buildozer.spec`：打包配置
 - `.github/workflows/build-apk.yml`：GitHub Actions 自动打包
